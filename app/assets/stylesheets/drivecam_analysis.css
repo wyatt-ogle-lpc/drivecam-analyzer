@@ -1,0 +1,239 @@
+/* ===== DriveCam Gas Card Analysis Page ===== */
+
+@font-face {
+    font-family: 'Proxima Nova SCOSF Condensed Regular';
+    src: url('/fonts/PROXIMA-NOVA-SCOSF-CONDENSED-REGULAR.OTF') format('opentype');
+    font-weight: 100;
+    font-style: normal;
+  }
+  
+  @font-face {
+    font-family: 'Proxima Nova SCOSF Condensed Bold';
+    src: url('/fonts/PROXIMA-NOVA-SCOSF-CONDENSED-BOLD.OTF') format('opentype');
+    font-weight: 100;
+    font-style: normal;
+  }
+  
+  @font-face {
+    font-family: 'Proxima Nova Condensed Bold';
+    src: url('/fonts/PROXIMA-NOVA-CONDENSED-BOLD.OTF') format('opentype');
+  }
+  
+  @font-face {
+    font-family: 'Proxima Nova SCOSF Condensed Light';
+    src: url('/fonts/PROXIMA-NOVA-SCOSF-CONDENSED-LIGHT.OTF') format('opentype');
+    font-weight: 100;
+    font-style: normal;
+  }
+  
+  @font-face {
+    font-family: 'Bebas Neue Bold';
+    src: url('/fonts/BEBASNEUE-BOLD.OTF') format('opentype');
+    font-weight: 100;
+    font-style: normal;
+  }
+  
+  @font-face {
+    font-family: 'Bebas Neue Regular';
+    src: url('/fonts/BEBASNEUE-REGULAR.OTF') format('opentype');
+    font-weight: 100;
+    font-style: normal;
+  }
+  
+  @font-face {
+    font-family: 'Proxima Nova Condensed Regular';
+    src: url('/fonts/PROXIMA-NOVA-CONDENSED-REGULAR.OTF') format('opentype');
+    font-weight: 100;
+    font-style: normal;
+  }
+  
+  @font-face {
+    font-family: 'Rocko Ultra FLF Bold';
+    src: url('/fonts/ROCKOULTRAFLF-BOLD.TTF') format('truetype');
+    font-weight: 100;
+    font-style: normal;
+  }
+
+/* Page container */
+.analysis-container {
+    font-family: 'Proxima Nova Condensed Regular', Arial, sans-serif;
+    max-width: 900px;
+    margin: 40px auto;
+    background: #f6f6f9;
+    border-radius: 16px;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.07);
+    padding: 30px 40px;
+    color: #1c1c1c;
+    font-weight: 100 !important;
+  }
+  
+  /* Heading */
+  .analysis-container h1 {
+    font-family: 'Bebas Neue Bold', sans-serif;
+    font-size: 3em;
+    text-align: center;
+    color: #1c1c1c;
+    margin-bottom: 30px;
+    font-weight: 100;
+  }
+
+  .analysis-container h2, h3{
+    font-weight: 100;
+  }
+  
+  /* Token form section */
+  .analysis-container label {
+    font-family: 'Proxima Nova Condensed Bold';
+    display: block;
+    margin-bottom: 6px;
+    margin-top: 12px;
+    font-size: 1.1em;
+    color: #1c1c1c;
+  }
+  
+  .analysis-container input[type="password"],
+  .analysis-container input[type="number"] {
+    width: 100%;
+    max-width: 400px;
+    padding: 10px 14px;
+    font-size: 1em;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+    background: #f1f1f1;
+    font-family: 'Proxima Nova Condensed Regular';
+    margin-bottom: 6px;
+    transition: border-color 0.2s;
+  }
+  
+  .analysis-container input:focus {
+    outline: none;
+    border-color: #9c481a;
+    box-shadow: 0 0 0 2px rgba(156, 72, 26, 0.1);
+  }
+  
+  /* Success/alert messages */
+  .analysis-container p {
+    font-size: 1em;
+    margin: 6px 0;
+  }
+  
+  .analysis-container p[style*="color: green;"] {
+    color: #2d7a2d !important;
+    font-family: 'Proxima Nova Condensed Bold';
+  }
+  
+  .analysis-container p[style*="color: red;"] {
+    color: #b02a2a !important;
+    font-family: 'Proxima Nova Condensed Bold';
+  }
+  
+  /* Horizontal rule styling */
+  .analysis-container hr {
+    border: none;
+    height: 1px;
+    background: #ddd;
+    margin: 20px 0;
+  }
+  
+  /* Upload and action buttons */
+  .analysis-container button,
+  .analysis-container input[type="submit"],
+  .analysis-container a.button {
+    background: #9c481a;
+    color: #fff;
+    font-family: 'Proxima Nova SCOSF Condensed Bold';
+    font-size: 1em;
+    border: none;
+    padding: 10px 18px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: background 0.2s ease, transform 0.1s ease;
+    display: inline-block;
+    text-decoration: none;
+    margin-top: 6px;
+  }
+  
+  .analysis-container button:hover,
+  .analysis-container input[type="submit"]:hover,
+  .analysis-container a.button:hover {
+    background: #7e3813;
+    transform: scale(1.03);
+  }
+  
+  /* Upload button (styled separately) */
+  .analysis-container button[type="button"] {
+    background: #9c481a;
+    margin-bottom: 10px;
+  }
+  
+  /* Row limit and offset fields inline */
+  .analysis-container .row-fields {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin-bottom: 20px;
+  }
+  
+  .analysis-container .row-fields label {
+    margin-bottom: 0;
+  }
+  
+  /* Stop button */
+  .analysis-container button.stop-btn {
+    background: #c62828;
+    margin-top: 20px;
+  }
+  
+  .analysis-container button.stop-btn:hover {
+    background: #a61e1e;
+  }
+  
+  /* Download report link */
+  .analysis-container a.button {
+    margin-top: 10px;
+    text-align: center;
+  }
+  
+  /* Mobile responsive */
+  @media (max-width: 768px) {
+    .analysis-container {
+      padding: 20px;
+      margin: 20px;
+    }
+  
+    .analysis-container h1 {
+      font-size: 2em;
+      margin-bottom: 20px;
+    }
+  
+    .analysis-container .row-fields {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 10px;
+    }
+  
+    .analysis-container input[type="password"],
+    .analysis-container input[type="number"] {
+      max-width: 100%;
+    }
+  
+    .analysis-container button,
+    .analysis-container input[type="submit"],
+    .analysis-container a.button {
+      width: 100%;
+      text-align: center;
+    }
+  }
+  
+
+  #progress-container {
+    width: 100%;
+    background: #eee;
+    margin: 10px 0;
+  }
+  #progress-bar {
+    height: 20px;
+    background: green;
+    width: 0%;
+    transition: width 0.3s ease; /* smooth fill animation */
+  }
