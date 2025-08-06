@@ -142,7 +142,7 @@ class AnalysisController < ApplicationController
     add_sheet.call("Missing Coordinates", report_data[:missing_coords_rows] || [])
     add_sheet.call("Flagged Transactions", report_data[:flagged_rows] || [])
     add_sheet.call("Passed Transactions", passed_rows)
-    add_sheet.call("Sunday Transactions", passed_on_sunday)
+    add_sheet.call("Sunday Transactions", passed_on_sunday) unless passed_on_sunday.empty?
   
     send_data package.to_stream.read,
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
