@@ -126,10 +126,23 @@ class AnalysisController < ApplicationController
       end
     end
   
+    passed_rows = report_data[:passed_rows] || []
+
+    # Filter passed rows for Sunday transactions
+    passed_on_sunday = passed_rows.select do |row|
+      begin
+        dt = Time.strptime("#{row[:date]} #{row[:time]}", "%m/%d/%y %H:%M:%S")
+        dt.wday == 0 # Sunday = 0
+      rescue
+        false
+      end
+    end
+    
     add_sheet.call("Missing Vehicle ID", report_data[:missing_vehicle_id_rows] || [])
     add_sheet.call("Missing Coordinates", report_data[:missing_coords_rows] || [])
     add_sheet.call("Flagged Transactions", report_data[:flagged_rows] || [])
-    add_sheet.call("Passed Transactions", report_data[:passed_rows] || [])
+    add_sheet.call("Passed Transactions", passed_rows)
+    add_sheet.call("Sunday Transactions", passed_on_sunday)
   
     send_data package.to_stream.read,
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -250,6 +263,7 @@ class AnalysisController < ApplicationController
           missing_vehicle_id_rows << {
               row: start_row + idx,
               driver: driver_name,
+              vehicle_id: line_id,
               vin: vin,
               date: date_str,
               time: time_str,
@@ -267,6 +281,7 @@ class AnalysisController < ApplicationController
           missing_coords_rows << {
               row: start_row + idx,
               driver: driver_name,
+              vehicle_id: line_id,
               vin: vin,
               date: date_str,
               time: time_str,
@@ -326,6 +341,7 @@ class AnalysisController < ApplicationController
           passed_rows << {
               row: start_row + idx,
               driver: driver_name,
+              vehicle_id: line_id,
               vin: vin,
               date: date_str,
               time: time_str,
