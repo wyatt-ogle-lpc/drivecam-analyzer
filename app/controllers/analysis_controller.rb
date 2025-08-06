@@ -139,10 +139,11 @@ class AnalysisController < ApplicationController
     end
     
     add_sheet.call("Missing Vehicle ID", report_data[:missing_vehicle_id_rows] || [])
-    add_sheet.call("Missing Coordinates", report_data[:missing_coords_rows] || [])
-    add_sheet.call("Flagged Transactions", report_data[:flagged_rows] || [])
-    add_sheet.call("Passed Transactions", passed_rows)
-    add_sheet.call("Sunday Transactions", passed_on_sunday)
+    add_sheet.call("Missing Coordinates from Vehicle", report_data[:missing_coords_rows] || [])
+    add_sheet.call("Flagged Transactions for Distance", report_data[:flagged_rows] || [])
+    add_sheet.call("Valid Transactions", passed_rows)
+    add_sheet.call("Sunday Transactions", passed_on_sunday) unless passed_on_sunday.empty?
+    add_sheet.call("Negative Distance Traveled", report_data[:negative_distance_rows] || [])
   
     send_data package.to_stream.read,
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
