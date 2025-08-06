@@ -142,7 +142,7 @@ class AnalysisController < ApplicationController
     add_sheet.call("Missing Coordinates", report_data[:missing_coords_rows] || [])
     add_sheet.call("Flagged Transactions", report_data[:flagged_rows] || [])
     add_sheet.call("Passed Transactions", passed_rows)
-    add_sheet.call("Sunday Transactions", passed_on_sunday) unless passed_on_sunday.empty?
+    add_sheet.call("Sunday Transactions", passed_on_sunday)
   
     send_data package.to_stream.read,
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -203,7 +203,9 @@ class AnalysisController < ApplicationController
       missing_coords_rows = []
       flagged_rows = []
       passed_rows = []
-    
+      negative_distance_rows = []
+
+      negative_distance_count = 0
       missing_vehicle_id_count = 0
       missing_coords_count = 0
       flagged_count = 0
@@ -213,6 +215,8 @@ class AnalysisController < ApplicationController
     begin
       retries = 0
       (start_row..end_row).each_with_index do |i, idx|
+        puts "Sleeping for 0.3 seconds to throttle API requests..." if idx % 100 == 0
+        sleep(0.3) # Throttle to avoid overwhelming the API
         #if idx >= 50
         #  raise Net::OpenTimeout, "Simulated timeout after 50 rows"
         #end
@@ -253,6 +257,26 @@ class AnalysisController < ApplicationController
         postal_code = row_data[:merchant_postal_code]
         driver_name = "#{row_data[:driver_first_name]} #{row_data[:driver_last_name]}"
         line_id     = row_data[:emboss_line_2]
+
+        current_odometer = row_data[:current_odometer].to_f
+        previous_odometer = row_data[:previous_odometer].to_f
+
+        if previous_odometer > current_odometer
+          puts "Row #{start_row + idx} — Negative odometer reading detected for VIN: #{vin}"
+          negative_distance_count += 1
+          negative_distance_rows << {
+            row: start_row + idx,
+            driver: driver_name,
+            vehicle_id: line_id,
+            vin: vin,
+            date: date_str,
+            time: time_str,
+            previous_odometer: previous_odometer,
+            current_odometer: current_odometer,
+            difference: (previous_odometer - current_odometer).round(2)
+          }
+          next
+        end
       
         # 1. Get vehicle identifier
         vehicle_id = vin_to_id_map[vin.to_s.upcase]
@@ -267,7 +291,7 @@ class AnalysisController < ApplicationController
               vin: vin,
               date: date_str,
               time: time_str,
-              address: "#{address}, #{city}, #{state} #{postal_code}"
+              gas_station_address: "#{address}, #{city}, #{state} #{postal_code}"
           }
           next
         end
@@ -285,7 +309,7 @@ class AnalysisController < ApplicationController
               vin: vin,
               date: date_str,
               time: time_str,
-              address: "#{address}, #{city}, #{state} #{postal_code}"
+              gas_station_address: "#{address}, #{city}, #{state} #{postal_code}"
           }
           next
         end
@@ -329,10 +353,10 @@ class AnalysisController < ApplicationController
               vin: vin,
               date: date_str,
               time: time_str,
-              address: "#{address}, #{city}, #{state} #{postal_code}",
-              distance: distance.round(2)
+              gas_station_address: "#{address}, #{city}, #{state} #{postal_code}",
+              distance_between_gas_and_vehicle_ft: distance.round(2)
           }
-          results << row_data.merge(flagged: true, distance: distance.round(2))
+          results << row_data.merge(flagged: true, distance_between_gas_and_vehicle_ft: distance.round(2))
         else
           # OK log
           #puts "Row #{start_row + idx} - VIN: #{vin}, Time: #{transaction_time_pst}, Driver: #{driver_name} - OK (#{distance.round(2)} ft)"
@@ -345,8 +369,8 @@ class AnalysisController < ApplicationController
               vin: vin,
               date: date_str,
               time: time_str,
-              address: "#{address}, #{city}, #{state} #{postal_code}",
-              distance: distance.round(2)
+              gas_station_address: "#{address}, #{city}, #{state} #{postal_code}",
+              distance_between_gas_and_vehicle_ft: distance.round(2)
           }
         end
       rescue Net::OpenTimeout => e
@@ -382,7 +406,8 @@ class AnalysisController < ApplicationController
         missing_vehicle_id_rows: missing_vehicle_id_rows,
         missing_coords_rows: missing_coords_rows,
         flagged_rows: flagged_rows,
-        passed_rows: passed_rows
+        passed_rows: passed_rows,
+        negative_distance_rows: negative_distance_rows
       }
   
       start_row_num = start_row
@@ -413,11 +438,12 @@ class AnalysisController < ApplicationController
     # --- Log summary at end ---
     puts "="*80
     puts "ANALYSIS SUMMARY"
-    puts "Total rows processed: #{total_rows}"
-    puts "Missing vehicle IDs:  #{missing_vehicle_id_count} (#{((missing_vehicle_id_count.to_f / total_rows) * 100).round(2)}%)"
-    puts "Missing coordinates:  #{missing_coords_count} (#{((missing_coords_count.to_f / total_rows) * 100).round(2)}%)"
-    puts "Flagged (>1000 ft):   #{flagged_count} (#{((flagged_count.to_f / total_rows) * 100).round(2)}%)"
-    puts "Passed (≤1000 ft):    #{passed_count} (#{((passed_count.to_f / total_rows) * 100).round(2)}%)"
+    puts "Total rows processed:    #{total_rows}"
+    puts "Missing vehicle IDs:     #{missing_vehicle_id_count} (#{((missing_vehicle_id_count.to_f / total_rows) * 100).round(2)}%)"
+    puts "Missing coordinates:     #{missing_coords_count} (#{((missing_coords_count.to_f / total_rows) * 100).round(2)}%)"
+    puts "Negative odo readings:   #{negative_distance_count} (#{((negative_distance_count.to_f / total_rows) * 100).round(2)}%)"
+    puts "Flagged (>1000 ft):      #{flagged_count} (#{((flagged_count.to_f / total_rows) * 100).round(2)}%)"
+    puts "Passed (≤1000 ft):       #{passed_count} (#{((passed_count.to_f / total_rows) * 100).round(2)}%)"
     puts "="*80
   
     # Optionally include summary in JSON/HTML output
@@ -429,11 +455,12 @@ class AnalysisController < ApplicationController
       passed: passed_count
     }
     report_data = {
-        missing_vehicle_id_rows: missing_vehicle_id_rows,
-        missing_coords_rows: missing_coords_rows,
-        flagged_rows: flagged_rows,
-        passed_rows: passed_rows
-      }
+      missing_vehicle_id_rows: missing_vehicle_id_rows,
+      missing_coords_rows: missing_coords_rows,
+      flagged_rows: flagged_rows,
+      passed_rows: passed_rows,
+      negative_distance_rows: negative_distance_rows
+    }
   end
 
 
