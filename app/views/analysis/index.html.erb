@@ -12,15 +12,18 @@
   <% if session[:gas_file_path].present? %>
     <p>File uploaded successfully. Ready to analyze.</p>
     <%= form_with url: "/analysis/run", method: :post, local: true do |f| %>
+      <%= hidden_field_tag :sync, 1 %>
+    
       <label>Row Limit:</label>
       <%= f.number_field :row_limit, min: 1, step: 1 %>
-
+    
       <label>Starting Row:</label>
       <p> (Row 2 is first row) </p>
       <%= f.number_field :row_offset, value: 2, min: 2, step: 1 %>
-
+    
       <%= f.submit "Analyze" %>
     <% end %>
+    
   <% end %>
 
   <button onclick="stopAnalysis()">Stop</button>

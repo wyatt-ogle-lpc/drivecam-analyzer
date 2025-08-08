@@ -114,24 +114,40 @@ class AnalysisController < ApplicationController
     sid = session.id
 
     # Start the analysis in a background thread (with proper logging/executor)
-    Thread.new do
-      Thread.current.name = "analysis-#{sid}" rescue nil
-      Thread.current.abort_on_exception = true
-      Thread.report_on_exception = true rescue nil
-    
-      Rails.logger.info "[analysis] thread started for session=#{sid} file=#{file_path}"
+    if params[:sync].to_s == "1" || ENV["SYNC_ANALYSIS"] == "1"
+      Rails.logger.info "[analysis] SYNC mode enabled – running perform_analysis inline"
       begin
         Rails.application.executor.wrap do
           perform_analysis(file_path, params[:row_limit], params[:row_offset], sid)
         end
+        Rails.logger.info "[analysis] SYNC perform_analysis finished"
       rescue => e
-        Rails.logger.error("[analysis] thread crashed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}")
+        Rails.logger.error("[analysis] SYNC perform_analysis crashed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}")
         AnalysisController.progress[:error] = true
-      ensure
-        AnalysisController.stop_flag = false
-        Rails.logger.info "[analysis] thread finished for session=#{sid}"
       end
-    end    
+    else
+      # Start the analysis in a background thread (with proper logging/executor)
+      thr = Thread.new do
+        Thread.current.name = "analysis-#{sid}" rescue nil
+        Thread.current.abort_on_exception = true
+        Thread.report_on_exception = true rescue nil
+    
+        Rails.logger.info "[analysis] thread started for session=#{sid} file=#{file_path}"
+        begin
+          Rails.application.executor.wrap do
+            perform_analysis(file_path, params[:row_limit], params[:row_offset], sid)
+          end
+        rescue => e
+          Rails.logger.error("[analysis] thread crashed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}")
+          AnalysisController.progress[:error] = true
+        ensure
+          AnalysisController.stop_flag = false
+          Rails.logger.info "[analysis] thread finished for session=#{sid}"
+        end
+      end
+      Rails.logger.info "[analysis] thread created: #{thr.inspect}"
+    end
+     
 
   
     # Immediately return so UI can poll progress and send stop
