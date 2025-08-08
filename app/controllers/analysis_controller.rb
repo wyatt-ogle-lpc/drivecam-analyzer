@@ -101,19 +101,34 @@ class AnalysisController < ApplicationController
     # Reset stop flag
     AnalysisController.stop_flag = false
     sid = session.id
+    unless File.exist?(file_path)
+      Rails.logger.warn "[analysis] uploaded file missing on disk: #{file_path}"
+      redirect_to analysis_path, alert: "No uploaded file found. Please upload again."
+      return
+    end
+    Rails.logger.info "[analysis] starting with file present: #{file_path} (#{File.size(file_path)} bytes)"
+    
 
-    # Start the analysis in a separate thread
+    # Start the analysis in a background thread (with proper logging/executor)
     Thread.new do
+      Thread.current.name = "analysis-#{sid}"
+      Thread.current.abort_on_exception = true
+      Thread.report_on_exception = true
+
+      Rails.logger.info "[analysis] thread started for session=#{sid} file=#{file_path}"
       begin
-        perform_analysis(file_path, params[:row_limit], params[:row_offset], sid)
+        Rails.application.executor.wrap do
+          perform_analysis(file_path, params[:row_limit], params[:row_offset], sid)
+        end
       rescue => e
-        Rails.logger.error("Analysis Stopped: #{e.message}")
-        AnalysisController.progress[:last_row] = i rescue nil
+        Rails.logger.error("[analysis] thread crashed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}")
         AnalysisController.progress[:error] = true
       ensure
         AnalysisController.stop_flag = false
+        Rails.logger.info "[analysis] thread finished for session=#{sid}"
       end
     end
+
   
     # Immediately return so UI can poll progress and send stop
     redirect_to analysis_path, notice: "Analysis started. Progress will update automatically."
@@ -265,6 +280,7 @@ class AnalysisController < ApplicationController
   
 
   def perform_analysis(file_path, row_limit_param, row_offset_param, sid)
+    Rails.logger.info "[analysis] perform_analysis starting file=#{file_path}"
     spreadsheet = Roo::Spreadsheet.open(file_path)
     state_file = Rails.root.join("tmp", "analysis_state.json")
     headers = spreadsheet.row(1).map { |h| h.to_s.downcase.gsub(/[^\w]+/, "_").to_sym }
@@ -516,7 +532,10 @@ class AnalysisController < ApplicationController
         end
       end
     rescue => e
-      Rails.logger.error "Unexpected error during analysis at row #{start_row + idx} (VIN=#{vin}, window=#{date_str} #{time_str} local) — #{e.message}"
+      safe_vin  = (defined?(vin) && vin) ? vin : "unknown"
+      safe_date = (defined?(date_str) && date_str) ? date_str : "?"
+      safe_time = (defined?(time_str) && time_str) ? time_str : "?"
+      Rails.logger.error "Unexpected error during analysis at row #{start_row + (defined?(idx) ? idx : -1)} (VIN=#{safe_vin}, window=#{safe_date} #{safe_time} local) — #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}"    
       AnalysisController.progress[:last_row] ||= start_row + idx rescue nil
       AnalysisController.progress[:error] = true
     
