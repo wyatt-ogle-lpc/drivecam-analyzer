@@ -72,24 +72,35 @@ class AnalysisController < ApplicationController
       return
     end
   
-    # Save uploaded file to tmp/
+    # Save uploaded file to persistent storage (not /tmp)
     uploaded_file = params[:file]
-    tmp_path = Rails.root.join("tmp", uploaded_file.original_filename)
-    File.open(tmp_path, "wb") { |f| f.write(uploaded_file.read) }
-  
-    # Store only path in session
-    session[:gas_file_path] = tmp_path.to_s
-  
+    uploads_dir = Rails.root.join("storage", "uploads")
+    FileUtils.mkdir_p(uploads_dir)
+    saved_path = uploads_dir.join(uploaded_file.original_filename)
+
+    File.open(saved_path, "wb") { |f| f.write(uploaded_file.read) }
+
+    # Store path both in session and server-side cache for reliability
+    session[:gas_file_path] = saved_path.to_s
+    Rails.cache.write("upload_path_#{session.id}", saved_path.to_s, expires_in: 12.hours)
+
+    Rails.logger.info "[analysis] uploaded file saved to #{saved_path} (#{File.size(saved_path)} bytes) for session=#{session.id}"
+
     redirect_to analysis_path, notice: "File uploaded. Click 'Analyze' to start."
+
   end
 
   # Run analysis
   def run
-    file_path = session[:gas_file_path]
+    file_path = Rails.cache.read("upload_path_#{session.id}") || session[:gas_file_path]
+
     unless file_path && File.exist?(file_path)
-      redirect_to analysis_path, alert: "No uploaded file found. Please upload again."
+      Rails.logger.warn "[analysis] uploaded file missing for session=#{session.id.inspect} path=#{file_path.inspect}"
+      redirect_to analysis_path, alert: "No uploaded file found on server. Please upload again."
       return
     end
+    Rails.logger.info "[analysis] starting with file present: #{file_path} (#{File.size(file_path)} bytes)"
+    
 
     begin
       fetch_lytx_short_lived_token_to_cache!
@@ -101,20 +112,13 @@ class AnalysisController < ApplicationController
     # Reset stop flag
     AnalysisController.stop_flag = false
     sid = session.id
-    unless File.exist?(file_path)
-      Rails.logger.warn "[analysis] uploaded file missing on disk: #{file_path}"
-      redirect_to analysis_path, alert: "No uploaded file found. Please upload again."
-      return
-    end
-    Rails.logger.info "[analysis] starting with file present: #{file_path} (#{File.size(file_path)} bytes)"
-    
 
     # Start the analysis in a background thread (with proper logging/executor)
     Thread.new do
-      Thread.current.name = "analysis-#{sid}"
+      Thread.current.name = "analysis-#{sid}" rescue nil
       Thread.current.abort_on_exception = true
-      Thread.report_on_exception = true
-
+      Thread.report_on_exception = true rescue nil
+    
       Rails.logger.info "[analysis] thread started for session=#{sid} file=#{file_path}"
       begin
         Rails.application.executor.wrap do
@@ -127,7 +131,7 @@ class AnalysisController < ApplicationController
         AnalysisController.stop_flag = false
         Rails.logger.info "[analysis] thread finished for session=#{sid}"
       end
-    end
+    end    
 
   
     # Immediately return so UI can poll progress and send stop
