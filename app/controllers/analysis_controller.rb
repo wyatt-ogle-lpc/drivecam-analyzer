@@ -92,16 +92,15 @@ class AnalysisController < ApplicationController
 
   # Run analysis
   def run
+    # 1) Validate the uploaded path (prefer cache; fall back to session)
     file_path = Rails.cache.read("upload_path_#{session.id}") || session[:gas_file_path]
-
     unless file_path && File.exist?(file_path)
       Rails.logger.warn "[analysis] uploaded file missing for session=#{session.id.inspect} path=#{file_path.inspect}"
       redirect_to analysis_path, alert: "No uploaded file found on server. Please upload again."
       return
     end
-    Rails.logger.info "[analysis] starting with file present: #{file_path} (#{File.size(file_path)} bytes)"
-    
-
+  
+    # 2) Ensure we can get a Lytx SLT
     begin
       fetch_lytx_short_lived_token_to_cache!
     rescue => e
@@ -109,11 +108,13 @@ class AnalysisController < ApplicationController
       return
     end
   
-    # Reset stop flag
+    # 3) Reset flags and log inputs
     AnalysisController.stop_flag = false
     sid = session.id
-
-    # Start the analysis in a background thread (with proper logging/executor)
+    Rails.logger.info "[analysis] starting with file present: #{file_path} (#{File.size(file_path)} bytes)"
+    Rails.logger.info "[analysis] params: row_limit=#{params[:row_limit].inspect} row_offset=#{params[:row_offset].inspect} sync=#{params[:sync].inspect}"
+  
+    # 4) SYNC mode (runs inline; good for debugging tiny runs). DO NOT redirect before this.
     if params[:sync].to_s == "1" || ENV["SYNC_ANALYSIS"] == "1"
       Rails.logger.info "[analysis] SYNC mode enabled – running perform_analysis inline"
       begin
@@ -121,38 +122,42 @@ class AnalysisController < ApplicationController
           perform_analysis(file_path, params[:row_limit], params[:row_offset], sid)
         end
         Rails.logger.info "[analysis] SYNC perform_analysis finished"
+        redirect_to analysis_path, notice: "Sync analysis finished. You can download the report if ready."
+        return
       rescue => e
         Rails.logger.error("[analysis] SYNC perform_analysis crashed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}")
         AnalysisController.progress[:error] = true
+        redirect_to analysis_path, alert: "Sync analysis crashed: #{e.class}: #{e.message}"
+        return
       end
-    else
-      # Start the analysis in a background thread (with proper logging/executor)
-      thr = Thread.new do
-        Thread.current.name = "analysis-#{sid}" rescue nil
-        Thread.current.abort_on_exception = true
-        Thread.report_on_exception = true rescue nil
-    
-        Rails.logger.info "[analysis] thread started for session=#{sid} file=#{file_path}"
-        begin
-          Rails.application.executor.wrap do
-            perform_analysis(file_path, params[:row_limit], params[:row_offset], sid)
-          end
-        rescue => e
-          Rails.logger.error("[analysis] thread crashed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}")
-          AnalysisController.progress[:error] = true
-        ensure
-          AnalysisController.stop_flag = false
-          Rails.logger.info "[analysis] thread finished for session=#{sid}"
-        end
-      end
-      Rails.logger.info "[analysis] thread created: #{thr.inspect}"
     end
-     
-
   
-    # Immediately return so UI can poll progress and send stop
+    # 5) ASYNC (thread) mode
+    Rails.logger.info "[analysis] about to create background thread (sid=#{sid})"
+    thr = Thread.new do
+      Thread.current.name = "analysis-#{sid}" rescue nil
+      Thread.current.abort_on_exception = true
+      Thread.report_on_exception = true rescue nil
+  
+      Rails.logger.info "[analysis] thread started for session=#{sid} file=#{file_path}"
+      begin
+        Rails.application.executor.wrap do
+          perform_analysis(file_path, params[:row_limit], params[:row_offset], sid)
+        end
+      rescue => e
+        Rails.logger.error("[analysis] thread crashed: #{e.class}: #{e.message}\n#{e.backtrace&.join("\n")}")
+        AnalysisController.progress[:error] = true
+      ensure
+        AnalysisController.stop_flag = false
+        Rails.logger.info "[analysis] thread finished for session=#{sid}"
+      end
+    end
+    Rails.logger.info "[analysis] thread object returned from Thread.new: #{thr.status.inspect}"
+  
+    # 6) Only redirect AFTER starting (or running) the job
     redirect_to analysis_path, notice: "Analysis started. Progress will update automatically."
   end
+  
 
 
   def generate_report
