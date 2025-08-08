@@ -3,26 +3,6 @@
 <div class="analysis-container">
   <h1>DriveCam Gas Card Analysis</h1>
 
-  <!-- Bearer Token Input -->
-  <%= form_with url: "/analysis/set_token", method: :post, local: true do |f| %>
-    <label for="bearer_token">Bearer Token (expires every hour):</label><br>
-    <%= f.password_field :bearer_token, value: session[:bearer_token], placeholder: "Enter token here", style: "width: 400px;" %>
-    <%= f.submit "Set Token" %>
-  <% end %>
-
-  <% if session[:bearer_token].present? %>
-    <% token_set_at = session[:bearer_token_set_at] ? Time.at(session[:bearer_token_set_at].to_i) : Time.current %>
-    <% expiration_time = token_set_at + 1.hour %>
-    <p style="color: green;">
-      Bearer token is set for this session. Expires in
-      <span id="token-countdown" data-expiration="<%= expiration_time.to_i %>"></span>
-    </p>
-  <% else %>
-    <p style="color: red;">Bearer token is not set. Please enter it above.</p>
-  <% end %>
-
-  <hr>
-
   <!-- File Upload Form -->
   <%= form_with url: "/analysis/import", local: true, html: { multipart: true } do |f| %>
     <%= f.file_field :file, style: "display:none", onchange: "this.form.submit();" %>
@@ -59,88 +39,6 @@
 
   <hr style="margin: 50px 0;">
 
-  <div class="instructions-container">
-    <h1>Instructions to Retrieve Token</h1>
-  
-    <h2>Advanced</h2>
-    <p>
-      To get started using the Lytx API, authenticate yourself by generating an access token.
-      The token gives you access to the API operations. If you make a request using an API operation
-      that you don't have access to, an error is returned. The token must be created via user registration
-      using Postman.
-    </p>
-  
-    <h2>Requirements</h2>
-    <ul>
-      <li><a href="https://www.postman.com/downloads/" target="_blank">Postman Desktop App</a></li>
-      <li><a href="https://gitforwindows.org/" target="_blank">Git for Windows</a></li>
-      <li>Lytx Account credentials for a 'Full Access' user at the highest group level.
-        For detail on creating users, see
-        <a href="https://support.lytx.com/s/article/add-edit-users" target="_blank">Managing Users</a>.
-      </li>
-      <li>(For Groups API write endpoints) Lytx Account credentials for user with 'Full Access' and 'Group Manager' roles at the highest group level.</li>
-    </ul>
-  
-    <h2>Before You Begin</h2>
-    <p>
-      Download and import the <strong>Customer Collection.postman_collection.json</strong> collection into your local Postman workspace.
-      <a href="/86e3874d26f605947ffd480eef2ed2c6/postman_collection.json" download>Download here</a>
-    </p>
-  
-    <h2>Instructions</h2>
-    <ol>
-      <li>
-        If the user to register does not have a public key, generate one. Open git-bash and run these commands:
-        <pre><code>mkdir lytx_keys
-  cd lytx_keys
-  openssl genrsa -out private.pem 2048
-  openssl rsa -in private.pem -outform PEM -pubout -out public.pem</code></pre>
-      </li>
-      <li>Copy <code>public.pem</code> to Postman's working directory (see Postman > Settings > General > Location).</li>
-      <li>In Postman, open <code>Customer Collection.postman_collection.json</code> and set <code>my_username</code> and <code>my_password</code> in Variables tab.</li>
-      <li>Run the <strong>User Registration</strong> folder and ensure tests pass.</li>
-      <li>Copy the Header and Payload values from the POST Register User response (or from Variables tab).</li>
-    </ol>
-  
-    <h3>Generating An Access Token</h3>
-    <ol>
-      <li>Go to <a href="https://jwt.io/" target="_blank">JWT.IO</a> and select algorithm RS256.</li>
-      <li>Paste the Header and Payload JSON into their respective fields (adjust "exp" if needed).</li>
-      <li>Paste your Public and Private keys (include <code>---BEGIN PUBLIC KEY---</code> / <code>---END PUBLIC KEY---</code>).</li>
-      <li>Once verified, copy the encoded token into Postman variable <code>thirdparty.access-token</code>.</li>
-      <li>Call <strong>GET Short Lived Token</strong> to retrieve a 60-minute bearer token for API requests.</li>
-    </ol>
-  
-    <h2>Header Example</h2>
-    <pre><code>{
-    "alg": "RS256",
-    "typ": "JWT",
-    "iss": "4XMeH767NxCuPZCzWjlHu98aeU1126IN"
-  }</code></pre>
-  
-    <h2>Payload Example</h2>
-    <pre><code>{
-    "name": "kongtestuser",
-    "user_id": "0000ffff-0000-1b00-71ca-ed46b0d60000",
-    "co_id": "1129",
-    "rootgroupid": "2bb2d9b4-c801-e111-81ce-e61f13277aab",
-    "roles": "Developer",
-    "exp": 1701887152
-  }</code></pre>
-  
-    <h2>Video Walkthrough</h2>
-    <video width="720" height="480" controls>
-      <source src="/videos/Lytx_Redocly_Portal_Authentication_Walkthrough_h265.mp4" type="video/mp4">
-      Your browser does not support the video tag.
-    </video>
-    
-    <p>
-      <a href="/videos/Lytx_Redocly_Portal_Authentication_Walkthrough_h265.mp4" download>Download Video</a>
-    </p>
-  </div>
-  
-
-
 </div>
 
 <script>
@@ -154,14 +52,13 @@ function stopAnalysis() {
     });
 }
 
-let lastProgress = 0;
-let analysisStartTime = null; // track when polling started
+window.analysisState = window.analysisState || { lastProgress: 0, analysisStartTime: null, polling: false };
 
 function pollProgress() {
-  if (!analysisStartTime) {
-    analysisStartTime = Date.now(); // set start time on first call
+  const state = window.analysisState;
+  if (!state.analysisStartTime) {
+    state.analysisStartTime = Date.now(); // set start time on first call
   }
-
   fetch('/analysis/progress')
     .then(res => res.json())
     .then(data => {
@@ -174,7 +71,7 @@ function pollProgress() {
       bar.style.width = percent + '%'; // <--- ADD THIS
 
       // Calculate elapsed time
-      let elapsedMs = Date.now() - analysisStartTime;
+      let elapsedMs = Date.now() - window.analysisState.analysisStartTime;
       let elapsedSec = Math.floor(elapsedMs / 1000);
       let hours = Math.floor(elapsedSec / 3600);
       let minutes = Math.floor((elapsedSec % 3600) / 60);
@@ -207,31 +104,35 @@ function pollProgress() {
           }
         }
         text.textContent = msg;
+        window.analysisState.polling = false;
         return; // Exit polling
       }
 
       // Continue polling
       if (data.current < data.total) {
-        if (data.current !== lastProgress) {
-          lastProgress = data.current;
-          setTimeout(pollProgress, 1000);
-        } else {
-          setTimeout(pollProgress, 2000);
-        }
+        const changed = data.current !== window.analysisState.lastProgress;
+        window.analysisState.lastProgress = data.current;
+        const delay = changed ? 1000 : 2000;
+        if (window.analysisState.polling) setTimeout(pollProgress, delay);
       }
     });
 }
 
-// Reset timer when analysis starts
+// Reset timer when analysis starts (bind once)
 document.addEventListener('turbo:load', () => {
   const analyzeForm = document.querySelector('form[action="/analysis/run"]');
-  if (analyzeForm) {
-    analyzeForm.addEventListener('submit', () => {
-      analysisStartTime = null; // reset
-      setTimeout(pollProgress, 2000);
-    });
-  }
+  if (!analyzeForm) return;
+  if (window.analysisBound) return; // prevent duplicate listeners after Turbo renders
+  window.analysisBound = true;
+
+  analyzeForm.addEventListener('submit', () => {
+    window.analysisState.lastProgress = 0;
+    window.analysisState.analysisStartTime = null;
+    window.analysisState.polling = true;
+    setTimeout(pollProgress, 2000);
+  });
 });
+
 
 
 

@@ -1,10 +1,14 @@
 require 'roo'
+require 'net/http'
+require 'uri'
+require 'json'
 
 class AnalysisController < ApplicationController
   before_action :load_file_data, only: :run
   skip_before_action :verify_authenticity_token, only: [:stop]
   @@progress = { current: 0, total: 0 }
-  @@stop_flag = false
+  @@stop_flag = false 
+  LYTX_SLT_URL = "https://api.lytx.com/v1/authenticate/token"
 
   def self.progress
     @@progress
@@ -42,9 +46,20 @@ class AnalysisController < ApplicationController
     @@stop_flag = value
   end
 
-  def bearer_token
-    session[:bearer_token]
+  # Returns a valid Lytx SLT from cache (refreshes if missing/near expiry)
+  def lytx_bearer_token
+    tok = Rails.cache.read("lytx_slt_token")
+    exp = Rails.cache.read("lytx_slt_expires_at")
+
+    # refresh if missing or expiring within 60s
+    if tok.blank? || exp.blank? || Time.current >= (exp - 60)
+      fetch_lytx_short_lived_token_to_cache!
+      tok = Rails.cache.read("lytx_slt_token")
+    end
+
+    tok
   end
+
 
   # Upload page
   def index
@@ -75,6 +90,13 @@ class AnalysisController < ApplicationController
       redirect_to analysis_path, alert: "No uploaded file found. Please upload again."
       return
     end
+
+    begin
+      fetch_lytx_short_lived_token_to_cache!
+    rescue => e
+      redirect_to analysis_path, alert: "Could not get Lytx token: #{e.message}"
+      return
+    end
   
     # Reset stop flag
     AnalysisController.stop_flag = false
@@ -96,16 +118,7 @@ class AnalysisController < ApplicationController
     # Immediately return so UI can poll progress and send stop
     redirect_to analysis_path, notice: "Analysis started. Progress will update automatically."
   end
-  
-  def set_token
-    if params[:bearer_token].present?
-      session[:bearer_token] = params[:bearer_token]
-      session[:bearer_token_set_at] = Time.current.to_i
-      redirect_to analysis_path, notice: "Bearer token saved for this session."
-    else
-      redirect_to analysis_path, alert: "Please provide a valid token."
-    end
-  end
+
 
   def generate_report
     file_path = Rails.cache.read("report_path_#{session.id}")
@@ -116,15 +129,31 @@ class AnalysisController < ApplicationController
     report_data = JSON.parse(File.read(file_path), symbolize_names: true)
   
     package = Axlsx::Package.new
+    # Excel worksheet name must be <= 31 chars and cannot contain : \ / ? * [ ]
+    used_sheet_names = {}
+    excel_sheet_name = ->(name) do
+      base = name.to_s.gsub(%r{[:\\/\?\*\[\]]}, "")
+      base = base[0, 31]
+      n = base
+      i = 1
+      while used_sheet_names[n]
+        suffix = " (#{i})"
+        n = base[0, 31 - suffix.length] + suffix
+        i += 1
+      end
+      used_sheet_names[n] = true
+      n
+    end
     wb = package.workbook
   
     add_sheet = ->(title, rows) do
-      wb.add_worksheet(name: title) do |sheet|
+      safe_title = excel_sheet_name.call(title)
+      wb.add_worksheet(name: safe_title) do |sheet|
         next if rows.empty?
         sheet.add_row rows.first.keys
         rows.each { |row| sheet.add_row row.values }
       end
-    end
+    end    
   
     passed_rows = report_data[:passed_rows] || []
 
@@ -139,8 +168,8 @@ class AnalysisController < ApplicationController
     end
     
     add_sheet.call("Missing Vehicle ID", report_data[:missing_vehicle_id_rows] || [])
-    add_sheet.call("Missing Coordinates from Vehicle", report_data[:missing_coords_rows] || [])
-    add_sheet.call("Flagged Transactions for Distance", report_data[:flagged_rows] || [])
+    add_sheet.call("Missing Vehicle GPS", report_data[:missing_coords_rows] || [])
+    add_sheet.call("Flagged Over 1000 ft", report_data[:flagged_rows] || [])    
     add_sheet.call("Valid Transactions", passed_rows)
     add_sheet.call("Sunday Transactions", passed_on_sunday) unless passed_on_sunday.empty?
     add_sheet.call("Negative Distance Traveled", report_data[:negative_distance_rows] || [])
@@ -164,6 +193,77 @@ class AnalysisController < ApplicationController
 
 
 
+
+  
+  # Generic GET with timeouts, retries, jitter, and Lytx 401 auto-refresh
+  def http_get_with_retry(url, headers: {}, max_retries: 5, purpose: nil, open_timeout: 5, timeout: 20)
+    attempt = 0
+    last_status = nil
+    last_body = nil
+
+    begin
+      attempt += 1
+      conn = Faraday.new(request: { open_timeout: open_timeout, timeout: timeout })
+      response = conn.get(url) { |req| headers.each { |k, v| req.headers[k] = v } }
+      last_status = response.status
+      last_body = response.body
+
+      # If token expired at Lytx, refresh once and retry immediately
+      if response.status == 401 && url.include?("lytx.com")
+        fetch_lytx_short_lived_token_to_cache!
+        refreshed_headers = headers.merge("Authorization" => "Bearer #{lytx_bearer_token}")
+        response = conn.get(url) { |req| refreshed_headers.each { |k, v| req.headers[k] = v } }
+        last_status = response.status
+        last_body = response.body
+      end
+
+      # Retry on transient server errors
+      if [500, 502, 503, 504].include?(response.status)
+        raise "HTTP #{response.status}"
+      end
+
+      return response
+    rescue => e
+      if attempt <= max_retries
+        sleep((2**(attempt - 1)) + rand * 0.3) # backoff + jitter
+        retry
+      end
+      msg = +"GET #{purpose || url} failed after #{attempt - 1} retries: #{e}"
+      msg << " — last status: #{last_status}" if last_status
+      msg << " — last body: #{last_body}" if last_body
+      raise msg
+    end
+  end
+
+
+  
+  
+  # Fetch a brand-new SLT and save to Rails.cache with an expiry timestamp
+  def fetch_lytx_short_lived_token_to_cache!
+    signed_jwt = ENV.fetch("LYTX_SIGNED_JWT")
+    uri = URI.parse(LYTX_SLT_URL)
+
+    req = Net::HTTP::Get.new(uri)
+    req["Authorization"] = "Bearer #{signed_jwt}"
+    req["Accept"]        = "application/json"
+
+    resp = Net::HTTP.start(uri.hostname, uri.port, use_ssl: true) { |h| h.request(req) }
+    raise "SLT fetch failed: HTTP #{resp.code} — #{resp.body}" unless resp.is_a?(Net::HTTPSuccess)
+
+    data   = JSON.parse(resp.body) rescue {}
+    token  = data["access_token"] || data["token"] || data["bearerToken"]
+    # Lytx sometimes returns expires_in seconds; default to 10 min if missing
+    ttl_s  = (data["expires_in"] || data["expiresIn"] || 600).to_i
+    raise "SLT fetch failed: token missing in response" if token.to_s.empty?
+
+    Rails.cache.write("lytx_slt_token", token, expires_in: ttl_s.seconds)
+    Rails.cache.write("lytx_slt_expires_at", Time.current + ttl_s.seconds, expires_in: ttl_s.seconds)
+    Rails.logger.info("Fetched new Lytx SLT (cached).")
+    token
+  end
+
+  
+
   def perform_analysis(file_path, row_limit_param, row_offset_param, sid)
     spreadsheet = Roo::Spreadsheet.open(file_path)
     state_file = Rails.root.join("tmp", "analysis_state.json")
@@ -173,16 +273,18 @@ class AnalysisController < ApplicationController
       saved_state = JSON.parse(File.read(state_file), symbolize_names: true)
       last_row = saved_state[:last_row] || 2
       missing_vehicle_id_rows = saved_state[:missing_vehicle_id_rows] || []
-      missing_coords_rows = saved_state[:missing_coords_rows] || []
-      flagged_rows = saved_state[:flagged_rows] || []
-      passed_rows = saved_state[:passed_rows] || []
+      missing_coords_rows      = saved_state[:missing_coords_rows]      || []
+      flagged_rows             = saved_state[:flagged_rows]             || []
+      passed_rows              = saved_state[:passed_rows]              || []
+      negative_distance_rows   = saved_state[:negative_distance_rows]   || []
       start_row = last_row + 1
-    
+      
       # Counters restored from arrays
       missing_vehicle_id_count = missing_vehicle_id_rows.length
-      missing_coords_count = missing_coords_rows.length
-      flagged_count = flagged_rows.length
-      passed_count = passed_rows.length
+      missing_coords_count     = missing_coords_rows.length
+      flagged_count            = flagged_rows.length
+      passed_count             = passed_rows.length
+      negative_distance_count  = negative_distance_rows.length      
     
       # Calculate end_row same as fresh run
       row_limit = row_limit_param.to_i
@@ -216,8 +318,8 @@ class AnalysisController < ApplicationController
     begin
       retries = 0
       (start_row..end_row).each_with_index do |i, idx|
-        puts "Sleeping for 0.3 seconds to throttle API requests..." if idx % 100 == 0
-        sleep(0.3) # Throttle to avoid overwhelming the API
+        puts "Sleeping for 0.5 seconds to throttle API requests..." if idx % 100 == 0
+        sleep(0.5) # Throttle to avoid overwhelming the API
         #if idx >= 50
         #  raise Net::OpenTimeout, "Simulated timeout after 50 rows"
         #end
@@ -322,6 +424,20 @@ class AnalysisController < ApplicationController
           merchant_state: state,
           merchant_postal_code: postal_code
         )
+
+        if station_cords[:latitude].nil? || station_cords[:longitude].nil?
+          missing_coords_count += 1
+          missing_coords_rows << {
+            row: start_row + idx,
+            driver: driver_name,
+            vehicle_id: line_id,
+            vin: vin,
+            date: date_str,
+            time: time_str,
+            gas_station_address: "#{address}, #{city}, #{state} #{postal_code}"
+          }
+          next
+        end        
     
         # 4. Compare distance
         distance = get_distance_between_cords(
@@ -384,8 +500,10 @@ class AnalysisController < ApplicationController
           missing_vehicle_id_rows: missing_vehicle_id_rows,
           missing_coords_rows: missing_coords_rows,
           flagged_rows: flagged_rows,
-          passed_rows: passed_rows
+          passed_rows: passed_rows,
+          negative_distance_rows: negative_distance_rows
         }.to_json)
+        
   
         if retries < 3
           sleep(2**retries)
@@ -398,9 +516,10 @@ class AnalysisController < ApplicationController
         end
       end
     rescue => e
-      Rails.logger.error "Unexpected error during analysis: #{e.message}"
+      Rails.logger.error "Unexpected error during analysis at row #{start_row + idx} (VIN=#{vin}, window=#{date_str} #{time_str} local) — #{e.message}"
       AnalysisController.progress[:last_row] ||= start_row + idx rescue nil
       AnalysisController.progress[:error] = true
+    
     ensure
       # Always write partial/final report
       report_data = {
@@ -475,10 +594,12 @@ class AnalysisController < ApplicationController
     Rails.cache.fetch("vin_to_id_map", expires_in: 1.hour) do
       url = "https://api.lytx.com/v0/vehicles/all?limit=10000&page=1&includeSubgroups=true"
   
-      response = Faraday.get(url) do |req|
-        req.headers["Authorization"] = "Bearer #{bearer_token}"
-      end
-  
+      response = http_get_with_retry(
+        url,
+        headers: { "Authorization" => "Bearer #{lytx_bearer_token}" },
+        purpose: "Lytx vehicles/all"
+      )
+      
       raise "Vehicle list fetch failed (#{response.status} - #{response.body})" unless response.success?
   
       vehicles = JSON.parse(response.body)["vehicles"] || []
@@ -500,12 +621,16 @@ class AnalysisController < ApplicationController
   
     hour, minute, second = time.split(":")
     hour = hour.rjust(2, "0")
-  
-    pst_time = Time.new(full_year.to_i, month.to_i, day.to_i, hour.to_i, minute.to_i, second.to_i)
-  
-    # --- First query: 1-minute window ---
-    utc_start_time = pst_time + 7.hours - 60.seconds
-    utc_end_time   = utc_start_time + 120.seconds
+
+    local_time = Time.use_zone("Pacific Time (US & Canada)") do
+      Time.zone.local(full_year.to_i, month.to_i, day.to_i, hour.to_i, minute.to_i, second.to_i)
+    end
+    
+    # Convert to UTC with correct DST handling
+    utc_center  = local_time.utc
+    utc_start_time = utc_center - 60.seconds
+    utc_end_time   = utc_center + 60.seconds
+    
   
     result = fetch_vehicle_gps_points(
       vehicle_id: vehicle_id,
@@ -523,15 +648,15 @@ class AnalysisController < ApplicationController
     # If no points found, progressively expand search backward by 1 hour at a time (up to 6 hours)
     hours_back = 1
     while (result[:data].empty? || result.dig(:data, 0, :points).blank?) && hours_back <= 6  
-      extended_start_time = pst_time - hours_back.hours + 7.hours # Convert to UTC
-      extended_end_time   = pst_time + 7.hours                     # Transaction time in UTC
+      extended_start_time = (local_time - hours_back.hours).utc
+      extended_end_time   = local_time.utc
   
       result = fetch_vehicle_gps_points(
         vehicle_id: vehicle_id,
         start_time: extended_start_time,
         end_time: extended_end_time,
         include_sub_groups: include_sub_groups,
-        limit: 1000,
+        limit: 200,
         offset: offset,
         date_option: date_option,
         order: "desc", # latest first
@@ -573,11 +698,30 @@ class AnalysisController < ApplicationController
     query = URI.encode_www_form(params)
     url = "https://data.lytx.com/v1/gps?#{query}"
   
-    raise "Bearer token not set. Please enter it on the index page." unless bearer_token.present?
-  
-    response = Faraday.get(url) { |req| req.headers["Authorization"] = "Bearer #{bearer_token}" }
-    body = response.body
-    raise "Request failed with #{response.status}: #{body}" unless response.success?
+    token = lytx_bearer_token
+    raise "Bearer token not available." if token.blank?
+    
+    headers = { "Authorization" => "Bearer #{token}" }
+    
+    # Guard against inverted/empty window (can trigger 500s upstream)
+    if end_time <= start_time
+      end_time = start_time + 120.seconds
+      end_iso  = end_time.strftime("%Y-%m-%dT%H:%M:%SZ")
+      params[:endDate] = end_iso
+      query = URI.encode_www_form(params)
+      url = "https://data.lytx.com/v1/gps?#{query}"
+    end
+    
+    response = http_get_with_retry(
+      url,
+      headers: headers,
+      max_retries: 5,
+      purpose: "Lytx GPS [vehicle_id=#{vehicle_id}] #{start_iso}..#{end_iso}"
+    )
+    
+    body = response.body.to_s
+    raise "Request failed with #{response.status}: #{body}" unless response.success?    
+    
     return { data: [] } if body.strip.empty?
   
     parsed = JSON.parse(body)
@@ -621,12 +765,14 @@ class AnalysisController < ApplicationController
     api_key = ENV["GOOGLE_API_KEY"]
     url = "https://maps.googleapis.com/maps/api/geocode/json?address=#{encoded_address}&key=#{api_key}"
   
-    response = Faraday.get(url)
-    data = JSON.parse(response.body)
+    response = http_get_with_retry(url, purpose: "Google Geocode")
+    data = JSON.parse(response.body) rescue {}    
   
     unless data["status"] == "OK"
-      raise "Geocoding failed: #{data['status']} - #{data['error_message'] || 'No details'}"
+      Rails.logger.warn "Geocoding failed: #{data['status']} - #{data['error_message'] || 'No details'} (#{url})"
+      return { latitude: nil, longitude: nil } # caller will treat as missing coords
     end
+    
   
     location = data["results"][0]["geometry"]["location"]
     { latitude: location["lat"], longitude: location["lng"] }
