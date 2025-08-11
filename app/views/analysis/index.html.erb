@@ -10,7 +10,8 @@
   <% end %>
 
   <% if session[:gas_file_path].present? %>
-    <p>File uploaded successfully. Ready to analyze.</p>
+    <% uploaded_filename = File.basename(session[:gas_file_path]) %>
+    <p>File "<strong><%= uploaded_filename %></strong>" uploaded successfully. Ready to analyze.</p>
     <%= form_with url: "/analysis/run", method: :post, local: true do |f| %>
       <%= hidden_field_tag :sync, 1 %>
     
@@ -23,7 +24,6 @@
     
       <%= f.submit "Analyze" %>
     <% end %>
-    
   <% end %>
 
   <button onclick="stopAnalysis()">Stop</button>
@@ -158,6 +158,12 @@ document.addEventListener('turbo:load', () => {
   }
 });
 
+uploadInput.addEventListener('change', () => {
+  if (uploadInput.files.length > 0) {
+    alert(`Selected file: ${uploadInput.files[0].name}`);
+  }
+  if (uploadInput.form) uploadInput.form.submit();
+});
 
 
 
