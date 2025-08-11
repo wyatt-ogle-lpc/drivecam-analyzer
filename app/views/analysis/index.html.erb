@@ -5,8 +5,8 @@
 
   <!-- File Upload Form -->
   <%= form_with url: "/analysis/import", local: true, html: { multipart: true } do |f| %>
-    <%= f.file_field :file, style: "display:none", onchange: "this.form.submit();" %>
-    <button type="button" onclick="this.previousElementSibling.click()">Upload File</button>
+    <%= f.file_field :file, id: "upload-file-input", style: "display:none" %>
+    <button type="button" id="upload-file-button">Upload File</button>    
   <% end %>
 
   <% if session[:gas_file_path].present? %>
@@ -44,7 +44,7 @@
 
 </div>
 
-<script>
+<script nonce="<%= content_security_policy_nonce %>">
 
 function stopAnalysis() {
   fetch('/analysis/stop', { method: 'POST' })
@@ -54,6 +54,17 @@ function stopAnalysis() {
       document.getElementById('progress-text').textContent = "Analysis stopped.";
     });
 }
+
+// Bind upload button & file input (replaces inline onclick/onchange)
+document.addEventListener('turbo:load', () => {
+  const uploadBtn = document.getElementById('upload-file-button');
+  const uploadInput = document.getElementById('upload-file-input');
+  if (uploadBtn && uploadInput) {
+    uploadBtn.addEventListener('click', () => uploadInput.click());
+    uploadInput.addEventListener('change', () => { if (uploadInput.form) uploadInput.form.submit(); });
+  }
+});
+
 
 window.analysisState = window.analysisState || { lastProgress: 0, analysisStartTime: null, polling: false };
 
@@ -65,7 +76,11 @@ function pollProgress() {
   fetch('/analysis/progress')
     .then(res => res.json())
     .then(data => {
-      if (!data.total || data.total === 0) return;
+      if (!data || !('total' in data) || data.total === 0) {
+        if (window.analysisState.polling) setTimeout(pollProgress, 2000);
+        return;
+      }
+    
 
       const bar = document.getElementById('progress-bar');
       const text = document.getElementById('progress-text');
@@ -123,18 +138,26 @@ function pollProgress() {
 
 // Reset timer when analysis starts (bind once)
 document.addEventListener('turbo:load', () => {
-  const analyzeForm = document.querySelector('form[action="/analysis/run"]');
-  if (!analyzeForm) return;
-  if (window.analysisBound) return; // prevent duplicate listeners after Turbo renders
-  window.analysisBound = true;
-
-  analyzeForm.addEventListener('submit', () => {
-    window.analysisState.lastProgress = 0;
-    window.analysisState.analysisStartTime = null;
+  // Always try to (re)start polling after load; it will self-throttle if nothing is running
+  if (!window.analysisState) window.analysisState = { lastProgress: 0, analysisStartTime: null, polling: false };
+  if (!window.analysisState.polling) {
     window.analysisState.polling = true;
-    setTimeout(pollProgress, 2000);
-  });
+    setTimeout(pollProgress, 1000);
+  }
+
+  // Bind once to the Analyze form to reset timers and start polling immediately on submit
+  const analyzeForm = document.querySelector('form[action="/analysis/run"]');
+  if (analyzeForm && !window.analysisBound) {
+    window.analysisBound = true;
+    analyzeForm.addEventListener('submit', () => {
+      window.analysisState.lastProgress = 0;
+      window.analysisState.analysisStartTime = null;
+      window.analysisState.polling = true;
+      setTimeout(pollProgress, 2000);
+    });
+  }
 });
+
 
 
 
