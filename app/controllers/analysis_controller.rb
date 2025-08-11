@@ -2,6 +2,7 @@ require 'roo'
 require 'net/http'
 require 'uri'
 require 'json'
+require 'faraday'
 
 class AnalysisController < ApplicationController
   before_action :load_file_data, only: :run
@@ -237,6 +238,12 @@ class AnalysisController < ApplicationController
   
   # Generic GET with timeouts, retries, jitter, and Lytx 401 auto-refresh
   def http_get_with_retry(url, headers: {}, max_retries: 5, purpose: nil, open_timeout: 5, timeout: 20)
+    # Always ensure Lytx calls use the freshest token from cache
+    if url.include?("lytx.com")
+      headers = headers.dup
+      headers["Authorization"] = "Bearer #{lytx_bearer_token}"
+    end
+  
     attempt = 0
     last_status = nil
     last_body = nil
@@ -248,10 +255,11 @@ class AnalysisController < ApplicationController
       last_status = response.status
       last_body = response.body
 
-      # If token expired at Lytx, refresh once and retry immediately
-      if response.status == 401 && url.include?("lytx.com")
+      # If token expired/invalid at Lytx, force-refresh once and retry immediately
+      if url.include?("lytx.com") && [401, 403].include?(response.status)
         fetch_lytx_short_lived_token_to_cache!
-        refreshed_headers = headers.merge("Authorization" => "Bearer #{lytx_bearer_token}")
+        refreshed_headers = headers.dup
+        refreshed_headers["Authorization"] = "Bearer #{lytx_bearer_token}"
         response = conn.get(url) { |req| refreshed_headers.each { |k, v| req.headers[k] = v } }
         last_status = response.status
         last_body = response.body
