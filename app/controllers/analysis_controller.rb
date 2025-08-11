@@ -306,55 +306,32 @@ class AnalysisController < ApplicationController
 
   def perform_analysis(file_path, row_limit_param, row_offset_param, sid)
     Rails.logger.info "[analysis] perform_analysis starting file=#{file_path}"
+    FileUtils.rm_f(Rails.root.join("tmp", "analysis_state.json"))
     spreadsheet = Roo::Spreadsheet.open(file_path)
-    state_file = Rails.root.join("tmp", "analysis_state.json")
     headers = spreadsheet.row(1).map { |h| h.to_s.downcase.gsub(/[^\w]+/, "_").to_sym }
     results = []
-    if File.exist?(state_file)
-      saved_state = JSON.parse(File.read(state_file), symbolize_names: true)
-      last_row = saved_state[:last_row] || 2
-      missing_vehicle_id_rows = saved_state[:missing_vehicle_id_rows] || []
-      missing_coords_rows      = saved_state[:missing_coords_rows]      || []
-      flagged_rows             = saved_state[:flagged_rows]             || []
-      passed_rows              = saved_state[:passed_rows]              || []
-      negative_distance_rows   = saved_state[:negative_distance_rows]   || []
-      start_row = last_row + 1
-      
-      # Counters restored from arrays
-      missing_vehicle_id_count = missing_vehicle_id_rows.length
-      missing_coords_count     = missing_coords_rows.length
-      flagged_count            = flagged_rows.length
-      passed_count             = passed_rows.length
-      negative_distance_count  = negative_distance_rows.length      
+    row_limit  = row_limit_param.to_i
+    row_offset = row_offset_param.to_i
     
-      # Calculate end_row same as fresh run
-      row_limit = row_limit_param.to_i
-      row_limit = 10000 if row_limit <= 0
-      end_row = [start_row + row_limit - 1, spreadsheet.last_row].min
-      total_rows = end_row - start_row + 1
-    else
-      row_limit = row_limit_param.to_i
-      row_offset = row_offset_param.to_i
+    row_limit  = 10000 if row_limit <= 0
+    row_offset = 2      if row_offset < 2
     
-      row_limit = 10000 if row_limit <= 0
-      row_offset = 2 if row_offset < 2
+    start_row = row_offset
+    end_row   = [start_row + row_limit - 1, spreadsheet.last_row].min
+    total_rows = end_row - start_row + 1
     
-      start_row = row_offset
-      end_row   = [start_row + row_limit - 1, spreadsheet.last_row].min
-      total_rows = end_row - start_row + 1
+    missing_vehicle_id_rows = []
+    missing_coords_rows     = []
+    flagged_rows            = []
+    passed_rows             = []
+    negative_distance_rows  = []
     
-      missing_vehicle_id_rows = []
-      missing_coords_rows = []
-      flagged_rows = []
-      passed_rows = []
-      negative_distance_rows = []
-
-      negative_distance_count = 0
-      missing_vehicle_id_count = 0
-      missing_coords_count = 0
-      flagged_count = 0
-      passed_count = 0
-    end
+    negative_distance_count     = 0
+    missing_vehicle_id_count    = 0
+    missing_coords_count        = 0
+    flagged_count               = 0
+    passed_count                = 0
+    
 
     begin
       retries = 0
@@ -536,16 +513,6 @@ class AnalysisController < ApplicationController
         AnalysisController.progress[:last_row] = start_row + idx
         AnalysisController.progress[:error] = true
 
-        File.write(state_file, {
-          last_row: i,
-          missing_vehicle_id_rows: missing_vehicle_id_rows,
-          missing_coords_rows: missing_coords_rows,
-          flagged_rows: flagged_rows,
-          passed_rows: passed_rows,
-          negative_distance_rows: negative_distance_rows
-        }.to_json)
-        
-  
         if retries < 3
           sleep(2**retries)
           retries += 1
@@ -596,7 +563,6 @@ class AnalysisController < ApplicationController
   
       Rails.logger.info "Analysis complete (partial or full). Report ready at #{file_path}"
       AnalysisController.stop_flag = false
-      File.delete(state_file) if File.exist?(state_file)
     end
   
     # --- Log summary at end ---
